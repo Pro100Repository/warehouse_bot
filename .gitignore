@@ -1,0 +1,8 @@
+# .gitignore
+.env
+*.pyc
+*.db
+*.xlsx
+__pycache__/
+venv/
+node_modules/
