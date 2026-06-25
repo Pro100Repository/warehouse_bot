@@ -22,14 +22,26 @@ R_EMBED = '{http://schemas.openxmlformats.org/officeDocument/2006/relationships}
 
 
 def get_image_map(xlsx_path: str, sheet_index: int) -> dict:
-    """Extract row(0-based) -> image bytes from xlsx drawing XML."""
+    """Extract row(0-based) -> image bytes from xlsx drawing XML.
+    Correctly maps sheet to its drawing via worksheet rels file."""
     row_to_img = {}
-    draw_num   = sheet_index + 1  # drawing1.xml = sheet1, drawing2.xml = sheet2
 
     with zipfile.ZipFile(xlsx_path) as z:
-        draw_path = f'xl/drawings/drawing{draw_num}.xml'
-        rels_path = f'xl/drawings/_rels/drawing{draw_num}.xml.rels'
+        # Find the correct drawing for this sheet via _rels
+        ws_rels_path = f'xl/worksheets/_rels/sheet{sheet_index + 1}.xml.rels'
+        draw_path = None
+        if ws_rels_path in z.namelist():
+            rels_root = ET.fromstring(z.read(ws_rels_path))
+            for rel in rels_root:
+                tgt = rel.attrib.get('Target', '')
+                if 'drawing' in tgt.lower():
+                    draw_path = tgt.replace('../', 'xl/')
+                    break
 
+        if not draw_path:
+            return {}
+
+        rels_path = draw_path.replace('xl/drawings/', 'xl/drawings/_rels/').replace('.xml', '.xml.rels')
         if draw_path not in z.namelist() or rels_path not in z.namelist():
             return {}
 

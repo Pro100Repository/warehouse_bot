@@ -1,7 +1,5 @@
 import logging
 import os
-from dotenv import load_dotenv
-load_dotenv()
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton
 from telegram.ext import (
     Application, CommandHandler, MessageHandler, CallbackQueryHandler,
@@ -23,6 +21,15 @@ logger = logging.getLogger(__name__)
  QTY_CHANGE) = range(15)
 
 db = Database()
+
+KEYBOARD_BUTTONS = {
+    "🔍 Пошук по номеру", "🚗 Пошук по авто",
+    "➕ Додати запчастину", "📋 Всі запчастини", "ℹ️ Допомога"
+}
+
+def is_keyboard_button(text: str) -> bool:
+    return text.strip() in KEYBOARD_BUTTONS or "Додати запчастину" in text
+
 
 
 # ─────────────────────────────────────────────
@@ -291,6 +298,7 @@ async def add_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def add_number(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if is_keyboard_button(update.message.text): return ConversationHandler.END
     context.user_data['new_part']['part_number'] = update.message.text.strip().upper()
     await update.message.reply_text(
         "Крок 2/11 — Введіть *марку авто*:\n_(наприклад: Skoda)_",
@@ -300,6 +308,7 @@ async def add_number(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def add_brand(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if is_keyboard_button(update.message.text): return ConversationHandler.END
     context.user_data['new_part']['car_brand'] = update.message.text.strip()
     keyboard = [[InlineKeyboardButton("⏭ Пропустити", callback_data="skip_model")]]
     await update.message.reply_text(
@@ -311,6 +320,7 @@ async def add_brand(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def add_model(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if is_keyboard_button(update.message.text): return ConversationHandler.END
     context.user_data['new_part']['car_model'] = update.message.text.strip()
     return await _ask_description(update.message)
 
@@ -332,6 +342,7 @@ async def _ask_description(message):
 
 
 async def add_description(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if is_keyboard_button(update.message.text): return ConversationHandler.END
     context.user_data['new_part']['description'] = update.message.text.strip()
     return await _ask_price(update.message)
 
@@ -353,6 +364,7 @@ async def _ask_price(message):
 
 
 async def add_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if is_keyboard_button(update.message.text): return ConversationHandler.END
     try:
         price = float(update.message.text.strip().replace(",", "."))
         context.user_data['new_part']['price'] = price
@@ -374,6 +386,7 @@ async def _ask_quantity(message):
 
 
 async def add_quantity(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if is_keyboard_button(update.message.text): return ConversationHandler.END
     try:
         qty = int(update.message.text.strip())
         if qty < 0:
@@ -850,6 +863,7 @@ async def free_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data['awaiting'] = 'search_car'
         return
     if "Додати запчастину" in text:
+        context.user_data.clear()
         await add_start(update, context)
         return
     if text == "📋 Всі запчастини":
