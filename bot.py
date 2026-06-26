@@ -164,7 +164,7 @@ async def qty_set_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def qty_set_finish(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if _is_kb(update.message.text):
+    if _is_kb(update.message.text) or not context.user_data.get('qty_part_id'):
         context.user_data.clear()
         return ConversationHandler.END
     try:
@@ -724,6 +724,11 @@ async def delete_execute(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def free_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text    = update.message.text.strip()
     waiting = context.user_data.get('awaiting')
+
+    # If user is inside add_conv dialog (new_part exists) — ignore non-keyboard text
+    # Keyboard buttons are handled by _kb_interrupt inside the conv handlers
+    if context.user_data.get('new_part') is not None and not _is_kb(text):
+        return
 
     if text == "🔍 Пошук по номеру":
         await update.message.reply_text("🔍 Введіть номер запчастини:")
