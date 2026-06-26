@@ -764,7 +764,7 @@ def main():
         entry_points=[
             CommandHandler("add", add_start),
             CallbackQueryHandler(add_start, pattern="^cmd_add$"),
-            MessageHandler(filters.Text(list(KB) + ["+ Додати запчастину"]) & filters.Regex("Додати"), add_start),
+            MessageHandler(filters.Regex(r"^[➕+]\s*Додати запчастину$"), add_start),
         ],
         states={
             ADD_NUMBER:       [MessageHandler(filters.TEXT & ~filters.COMMAND, add_number)],
@@ -786,7 +786,6 @@ def main():
         },
         fallbacks=[CommandHandler("cancel", cancel),
                    CommandHandler("start", start)],
-        allow_reentry=True,
     )
 
     edit_conv = ConversationHandler(
