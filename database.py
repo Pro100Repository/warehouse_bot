@@ -28,6 +28,7 @@ class Database:
                     side        TEXT,
                     lamp_type   TEXT,
                     photo_id    TEXT,
+                    photo_ids   TEXT,
                     created_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
                     updated_at  DATETIME DEFAULT CURRENT_TIMESTAMP
                 )
@@ -39,6 +40,8 @@ class Database:
             cols = [r[1] for r in conn.execute("PRAGMA table_info(parts)").fetchall()]
             if "market" not in cols:
                 conn.execute("ALTER TABLE parts ADD COLUMN market TEXT")
+            if "photo_ids" not in cols:
+                conn.execute("ALTER TABLE parts ADD COLUMN photo_ids TEXT")
             if "side" not in cols:
                 conn.execute("ALTER TABLE parts ADD COLUMN side TEXT")
             if "lamp_type" not in cols:
@@ -86,8 +89,8 @@ class Database:
             cur = conn.execute("""
                 INSERT INTO parts
                     (part_number, car_brand, car_model, description,
-                     price, quantity, condition, market, side, lamp_type, photo_id)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     price, quantity, condition, market, side, lamp_type, photo_id, photo_ids)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 data.get("part_number"),
                 data.get("car_brand"),
@@ -100,6 +103,7 @@ class Database:
                 data.get("side"),
                 data.get("lamp_type"),
                 data.get("photo_id"),
+                data.get("photo_ids"),
             ))
             conn.commit()
             return cur.lastrowid
@@ -170,7 +174,7 @@ class Database:
     def update_field(self, part_id: int, field: str, value: Any):
         allowed = {
             "part_number", "car_brand", "car_model",
-            "description", "price", "quantity", "condition", "market", "side", "lamp_type", "photo_id"
+            "description", "price", "quantity", "condition", "market", "side", "lamp_type", "photo_id", "photo_ids"
         }
         if field not in allowed:
             raise ValueError(f"Field '{field}' is not allowed to update.")
