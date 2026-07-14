@@ -801,9 +801,11 @@ async def free_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text    = update.message.text.strip()
     waiting = context.user_data.get('awaiting')
 
-    # If user is inside add_conv dialog (new_part exists) — ignore non-keyboard text
-    # Keyboard buttons are handled by _kb_interrupt inside the conv handlers
-    if context.user_data.get('new_part') is not None and not _is_kb(text):
+    # If user is inside a conversation dialog — ignore non-keyboard text
+    in_add  = context.user_data.get('new_part') is not None
+    in_edit = context.user_data.get('edit_id') is not None
+    in_qty  = context.user_data.get('qty_part_id') is not None
+    if (in_add or in_edit or in_qty) and not _is_kb(text):
         return
 
     if text == "🔍 Пошук по номеру":
