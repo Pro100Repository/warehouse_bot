@@ -550,7 +550,8 @@ async def _kb_interrupt(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif "Допомога" in text:
         await help_cmd(update, context)
     elif "Додати запчастину" in text:
-        return await add_start(update, context)
+        # Let add_conv entry_point handle this
+        pass
     return ConversationHandler.END
 
 
@@ -817,8 +818,7 @@ async def free_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data['awaiting'] = 'search_car'
         return
     if "Додати запчастину" in text:
-        context.user_data.clear()
-        await add_start(update, context)
+        # Handled by add_conv entry_point - ignore here to prevent duplicate
         return
     if text == "📋 Всі запчастини":
         await list_all(update, context)

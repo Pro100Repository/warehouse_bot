@@ -9,10 +9,7 @@ import subprocess
 import sys
 
 # ← Вставте ваш токен тут
-from dotenv import load_dotenv
-load_dotenv()
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-
+BOT_TOKEN = "PASTE_YOUR_TOKEN_HERE"
 
 if BOT_TOKEN == "PASTE_YOUR_TOKEN_HERE":
     print("❌ Відредагуйте файл start.py і вставте ваш BOT_TOKEN!")
