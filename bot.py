@@ -1,15 +1,14 @@
 import logging
 import os
 import json
-import re
 import tempfile
-import requests as req_lib
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton
 from telegram.ext import (
     Application, CommandHandler, MessageHandler, CallbackQueryHandler,
     ConversationHandler, filters, ContextTypes
 )
 from database import Database
+from clip_local import get_clip_embedding as _get_clip_embedding
 
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -28,9 +27,6 @@ PHOTO_VISION_WAIT = 99  # waiting for photo for vision search
 
 db = Database()
 
-SERPAPI_KEY       = os.environ.get("SERPAPI_KEY", "")
-GOOGLE_VISION_KEY = os.environ.get("GOOGLE_VISION_KEY", "")
-HF_TOKEN          = os.environ.get("HF_TOKEN", "")
 
 # Texts of persistent keyboard buttons (used to detect interruptions)
 KB = {"🔍 Пошук по номеру", "🚗 Пошук по авто",
@@ -808,412 +804,7 @@ async def delete_execute(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 
-# ── PHOTO SEARCH ──────────────────────────────────────────────────────────────
-
-# Mapping Ukrainian lamp types to DB values
-LAMP_TYPE_MAP = {
-    "передня": "Передня", "передній": "Передня", "фара": "Передня",
-    "задня":   "Задня",   "задній":   "Задня",   "фонар": "Задня",
-    "бленда":  "Бленда",
-    "кузов":   "Кузов",
-}
-SIDE_MAP = {
-    "права": "Права", "правий": "Права", "правa": "Права",
-    "ліва":  "Ліва",  "лівий":  "Ліва",  "лівa":  "Ліва",
-    "right": "Права", "left":   "Ліва",
-}
-
-
-def _extract_info_from_lens(lens_results: list) -> dict:
-    """Parse Google Lens results to extract brand, model, lamp_type, side, part_number."""
-    all_text = " ".join(lens_results).lower()
-
-    info = {
-        "brand": None, "model": None,
-        "lamp_type": None, "side": None, "part_number": None
-    }
-
-    # Known brands
-    brands = [
-        "mercedes", "volkswagen", "skoda", "audi", "bmw", "toyota",
-        "honda", "ford", "opel", "renault", "peugeot", "hyundai",
-        "kia", "volvo", "seat", "porsche", "lexus", "nissan", "mazda",
-    ]
-    for b in brands:
-        if b in all_text:
-            info["brand"] = b.capitalize()
-            break
-
-    # Lamp type
-    for kw, val in LAMP_TYPE_MAP.items():
-        if kw in all_text:
-            info["lamp_type"] = val
-            break
-
-    # Side
-    for kw, val in SIDE_MAP.items():
-        if kw in all_text:
-            info["side"] = val
-            break
-
-    # Part number pattern (e.g. 57H945208, A2059060400, 63217296018)
-    pn_match = re.search(r'\b[A-Z0-9]{6,15}\b', " ".join(lens_results))
-    if pn_match:
-        info["part_number"] = pn_match.group(0)
-
-    return info
-
-
-async def search_by_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle photo sent outside of add/edit conversation — SerpAPI Google Lens."""
-    # Skip if inside a conversation or waiting for vision photo
-    if (context.user_data.get('new_part') is not None or
-            context.user_data.get('edit_id') is not None or
-            context.user_data.get('awaiting') in ('vision_photo', 'clip_photo')):
-        return
-
-    if not SERPAPI_KEY:
-        await update.message.reply_text(
-            "⚠️ Пошук по фото не налаштовано.\n"
-            "Додайте SERPAPI_KEY у .env файл."
-        )
-        return
-
-    msg = await update.message.reply_text("🔍 Аналізую фото...")
-
-    try:
-        # Download photo from Telegram
-        photo   = update.message.photo[-1]
-        tg_file = await context.bot.get_file(photo.file_id)
-
-        with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tmp:
-            await tg_file.download_to_drive(tmp.name)
-            tmp_path = tmp.name
-
-        # Upload to SerpAPI Google Lens
-        with open(tmp_path, "rb") as img_file:
-            response = req_lib.post(
-                "https://serpapi.com/search",
-                params={
-                    "engine":  "google_lens",
-                    "api_key": SERPAPI_KEY,
-                },
-                files={"image_file": img_file},
-                timeout=30
-            )
-
-        os.unlink(tmp_path)
-
-        if response.status_code != 200:
-            await msg.edit_text("❌ Помилка API. Спробуйте ще раз.")
-            return
-
-        data = response.json()
-
-        # Extract text results from visual matches
-        lens_texts = []
-        for match in data.get("visual_matches", [])[:10]:
-            lens_texts.append(match.get("title", ""))
-            lens_texts.append(match.get("snippet", ""))
-
-        # Also check knowledge graph
-        kg = data.get("knowledge_graph", {})
-        if kg:
-            lens_texts.append(kg.get("title", ""))
-            lens_texts.append(kg.get("description", ""))
-
-        if not lens_texts:
-            await msg.edit_text(
-                "🤷 Не вдалось розпізнати деталь.\n"
-                "Спробуйте сфотографувати з меншої відстані або під іншим кутом."
-            )
-            return
-
-        # Extract structured info
-        info = _extract_info_from_lens(lens_texts)
-
-        # Build search summary
-        summary_parts = []
-        if info["part_number"]: summary_parts.append(f"Номер: `{info['part_number']}`")
-        if info["brand"]:       summary_parts.append(f"Марка: {info['brand']}")
-        if info["model"]:       summary_parts.append(f"Модель: {info['model']}")
-        if info["lamp_type"]:   summary_parts.append(f"Тип: {info['lamp_type']}")
-        if info["side"]:        summary_parts.append(f"Сторона: {info['side']}")
-
-        if not any(info.values()):
-            await msg.edit_text(
-                "🤷 Не вдалось визначити деталь.\n"
-                "Спробуйте надіслати чіткіше фото або введіть пошуковий запит вручну."
-            )
-            return
-
-        await msg.edit_text(
-            "🔍 *Розпізнано:*\n" + "\n".join(summary_parts) + "\n\n⏳ Шукаю в базі...",
-            parse_mode="Markdown"
-        )
-
-        # Search DB — progressive fallback
-        search_level = None
-        parts = []
-
-        # Level 1: part_number (найточніший)
-        if info["part_number"]:
-            parts = db.photo_search(part_number=info["part_number"])
-            if parts: search_level = f"номером `{info['part_number']}`"
-
-        # Level 2: brand + model + lamp_type + side
-        if not parts and info["brand"] and info["model"] and info["lamp_type"] and info["side"]:
-            parts = db.photo_search(
-                brand=info["brand"], model=info["model"],
-                lamp_type=info["lamp_type"], side=info["side"]
-            )
-            if parts: search_level = "маркою, моделлю, типом та стороною"
-
-        # Level 3: brand + model
-        if not parts and info["brand"] and info["model"]:
-            parts = db.photo_search(brand=info["brand"], model=info["model"])
-            if parts: search_level = "маркою та моделлю"
-
-        # Level 4: brand + lamp_type
-        if not parts and info["brand"] and info["lamp_type"]:
-            parts = db.photo_search(brand=info["brand"], lamp_type=info["lamp_type"])
-            if parts: search_level = "маркою та типом"
-
-        # Level 5: brand only — limited to 10
-        if not parts and info["brand"]:
-            all_brand = db.photo_search(brand=info["brand"])
-            if all_brand:
-                parts = all_brand[:10]
-                search_level = f"маркою {info['brand']} _(точного збігу не знайдено, показую перші {len(parts)})_"
-
-        if not parts:
-            await update.message.reply_text(
-                "❌ Збігів не знайдено.\n"
-                "Спробуйте ввести пошуковий запит вручну або зробіть чіткіше фото."
-            )
-            return
-
-        found_msg = f"✅ Знайдено *{len(parts)}* шт. за {search_level}."
-        if len(parts) > 20:
-            found_msg += "\n_Показую перші 20 результатів_"
-            parts = parts[:20]
-
-        await update.message.reply_text(found_msg, parse_mode="Markdown")
-        for part in parts:
-            await send_part_card(update.message, part)
-
-    except Exception as e:
-        logger.error(f"Photo search error: {e}")
-        await msg.edit_text("❌ Помилка під час аналізу фото. Спробуйте ще раз.")
-
-
-
-# ── GOOGLE VISION PHOTO SEARCH ────────────────────────────────────────────────
-
-async def vision_search_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """User pressed 📷 Пошук по фото button."""
-    if not GOOGLE_VISION_KEY:
-        await update.message.reply_text(
-            "⚠️ Google Vision API не налаштовано.\n"
-            "Додайте GOOGLE_VISION_KEY у .env файл."
-        )
-        return
-
-    context.user_data['awaiting'] = 'vision_photo'
-    await update.message.reply_text(
-        "📷 *Пошук по фото*\n\n"
-        "Надішліть фото запчастини — бот знайде схожі в базі.",
-        parse_mode="Markdown"
-    )
-
-
-async def vision_search_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle photo for Google Vision similarity search — only when button was pressed."""
-    if context.user_data.get('awaiting') != 'vision_photo':
-        return  # Not waiting for vision photo — let search_by_photo handle it
-
-    context.user_data.pop('awaiting', None)
-
-    if not GOOGLE_VISION_KEY:
-        return
-
-    msg = await update.message.reply_text("🔍 Аналізую фото через Google Vision...")
-
-    try:
-        import base64
-
-        # Download photo from Telegram
-        photo   = update.message.photo[-1]
-        tg_file = await context.bot.get_file(photo.file_id)
-
-        with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tmp:
-            await tg_file.download_to_drive(tmp.name)
-            tmp_path = tmp.name
-
-        with open(tmp_path, "rb") as f:
-            image_b64 = base64.b64encode(f.read()).decode("utf-8")
-        os.unlink(tmp_path)
-
-        # Call Google Vision API - Web Detection (finds visually similar images)
-        vision_url = (
-            f"https://vision.googleapis.com/v1/images:annotate"
-            f"?key={GOOGLE_VISION_KEY}"
-        )
-        payload = {
-            "requests": [{
-                "image": {"content": image_b64},
-                "features": [
-                    {"type": "WEB_DETECTION",  "maxResults": 10},
-                    {"type": "TEXT_DETECTION",  "maxResults": 5},
-                    {"type": "LABEL_DETECTION", "maxResults": 10},
-                ]
-            }]
-        }
-
-        resp = req_lib.post(vision_url, json=payload, timeout=30)
-        if resp.status_code != 200:
-            await msg.edit_text(f"❌ Помилка Google Vision API: {resp.status_code}")
-            return
-
-        result   = resp.json()["responses"][0]
-        web_det  = result.get("webDetection", {})
-        texts    = result.get("textAnnotations", [])
-        labels   = result.get("labelAnnotations", [])
-
-        # --- Extract part number from OCR text ---
-        part_number = None
-        full_text   = texts[0]["description"] if texts else ""
-        pn_match    = re.search(r'\b[A-Z0-9]{6,15}\b', full_text)
-        if pn_match:
-            part_number = pn_match.group(0)
-
-        # --- Extract brand/model/type from web entities and labels ---
-        web_entities  = [e.get("description","") for e in web_det.get("webEntities", [])]
-        label_descs   = [l.get("description","") for l in labels]
-        all_text_data = " ".join(web_entities + label_descs + [full_text]).lower()
-
-        brands = [
-            "mercedes","volkswagen","skoda","audi","bmw","toyota",
-            "honda","ford","opel","renault","peugeot","hyundai",
-            "kia","volvo","seat","porsche","lexus","nissan","mazda",
-        ]
-        brand = next((b.capitalize() for b in brands if b in all_text_data), None)
-
-        lamp_type = None
-        for kw, val in LAMP_TYPE_MAP.items():
-            if kw in all_text_data:
-                lamp_type = val
-                break
-
-        side = None
-        for kw, val in SIDE_MAP.items():
-            if kw in all_text_data:
-                side = val
-                break
-
-        # --- Also check visually similar images titles ---
-        similar_titles = [
-            p.get("pageTitle","") for p in web_det.get("pagesWithMatchingImages", [])
-        ]
-        similar_text = " ".join(similar_titles).lower()
-        if not brand:
-            brand = next((b.capitalize() for b in brands if b in similar_text), None)
-
-        # Build summary
-        found_info = []
-        if part_number: found_info.append(f"Номер: `{part_number}`")
-        if brand:       found_info.append(f"Марка: {brand}")
-        if lamp_type:   found_info.append(f"Тип: {lamp_type}")
-        if side:        found_info.append(f"Сторона: {side}")
-
-        info_text = "\n".join(found_info) if found_info else "_нічого не розпізнано_"
-        await msg.edit_text(
-            f"🔍 *Розпізнано:*\n{info_text}\n\n⏳ Шукаю в базі...",
-            parse_mode="Markdown"
-        )
-
-        # --- Progressive DB search ---
-        parts        = []
-        search_level = None
-
-        # ── Vision progressive DB search ──
-        # Level 1: part number
-        if part_number:
-            parts = db.photo_search(part_number=part_number)
-            if parts: search_level = f"номером `{part_number}`"
-
-        # Level 2: brand + lamp_type + side
-        if not parts and brand and lamp_type and side:
-            parts = db.photo_search(brand=brand, lamp_type=lamp_type, side=side)
-            if parts: search_level = "маркою, типом та стороною"
-
-        # Level 3: brand + lamp_type (без сторони)
-        if not parts and brand and lamp_type:
-            parts = db.photo_search(brand=brand, lamp_type=lamp_type)
-            if parts: search_level = "маркою та типом"
-
-        # Level 4: brand + side (без типу)
-        if not parts and brand and side:
-            parts = db.photo_search(brand=brand, side=side)
-            if parts: search_level = "маркою та стороною"
-
-        # Level 5: brand only — limited to 10 results
-        if not parts and brand:
-            all_brand = db.photo_search(brand=brand)
-            if all_brand:
-                parts = all_brand[:10]
-                search_level = f"маркою {brand} _(точного збігу не знайдено, показую перші {len(parts)})_"
-
-        # Level 6: no match
-        if not parts:
-            await update.message.reply_text(
-                "❌ Збігів не знайдено.\n"
-                "Спробуйте ввести пошуковий запит вручну."
-            )
-            return
-
-        found_msg = f"✅ Знайдено *{len(parts)}* шт. за {search_level}."
-        if len(parts) > 20:
-            found_msg += "\n_Показую перші 20_"
-            parts = parts[:20]
-
-        await update.message.reply_text(found_msg, parse_mode="Markdown")
-        for part in parts:
-            await send_part_card(update.message, part)
-
-    except Exception as e:
-        logger.error(f"Vision search error: {e}")
-        await msg.edit_text("❌ Помилка під час аналізу. Спробуйте ще раз.")
-
-
-
-# ── CLIP VECTOR SEARCH ────────────────────────────────────────────────────────
-
-HF_CLIP_URL = "https://api-inference.huggingface.co/models/openai/clip-vit-base-patch32"
-
-
-async def _get_clip_embedding(image_bytes: bytes) -> list | None:
-    """Get CLIP embedding for an image via Hugging Face API."""
-    if not HF_TOKEN:
-        return None
-    try:
-        import base64
-        b64 = base64.b64encode(image_bytes).decode()
-        headers = {"Authorization": f"Bearer {HF_TOKEN}"}
-        payload = {"inputs": {"image": b64}}
-        resp = req_lib.post(HF_CLIP_URL, headers=headers, json=payload, timeout=30)
-        if resp.status_code == 200:
-            data = resp.json()
-            # HF returns embedding as list of floats
-            if isinstance(data, list) and len(data) > 0:
-                emb = data[0] if isinstance(data[0], list) else data
-                if isinstance(emb, list) and all(isinstance(x, (int, float)) for x in emb):
-                    return emb
-        return None
-    except Exception as e:
-        logger.error(f"CLIP embedding error: {e}")
-        return None
-
+# ── CLIP VECTOR SEARCH (локальна модель, без зовнішнього API) ──────────────────
 
 def _cosine_similarity(a: list, b: list) -> float:
     """Compute cosine similarity between two vectors."""
@@ -1257,13 +848,6 @@ async def _ensure_embeddings(context: ContextTypes.DEFAULT_TYPE, status_msg=None
 
 async def clip_search_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """User pressed 📷 Пошук по фото button."""
-    if not HF_TOKEN:
-        await update.message.reply_text(
-            "⚠️ Пошук по фото не налаштовано.\n"
-            "Додайте HF_TOKEN у .env файл."
-        )
-        return
-
     context.user_data['awaiting'] = 'clip_photo'
     await update.message.reply_text(
         "📷 *Пошук по фото*\n\n"
@@ -1296,8 +880,7 @@ async def clip_search_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         query_emb = await _get_clip_embedding(query_bytes)
         if query_emb is None:
             await msg.edit_text(
-                "❌ Не вдалось обробити фото.\n"
-                "Перевірте HF_TOKEN або спробуйте пізніше."
+                "❌ Не вдалось обробити фото. Спробуйте ще раз."
             )
             return
 
@@ -1478,7 +1061,6 @@ def main():
     app.add_handler(CallbackQueryHandler(delete_execute, pattern=r"^del_(yes_\d+|no)$"))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, free_text))
     app.add_handler(MessageHandler(filters.PHOTO, clip_search_photo))
-    app.add_handler(MessageHandler(filters.PHOTO, search_by_photo))
 
     print("🤖 Бот запущено!")
     app.run_polling()
