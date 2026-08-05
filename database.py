@@ -29,6 +29,7 @@ class Database:
                     lamp_type   TEXT,
                     photo_id    TEXT,
                     photo_ids   TEXT,
+                    embedding   TEXT,
                     created_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
                     updated_at  DATETIME DEFAULT CURRENT_TIMESTAMP
                 )
@@ -42,6 +43,8 @@ class Database:
                 conn.execute("ALTER TABLE parts ADD COLUMN market TEXT")
             if "photo_ids" not in cols:
                 conn.execute("ALTER TABLE parts ADD COLUMN photo_ids TEXT")
+            if "embedding" not in cols:
+                conn.execute("ALTER TABLE parts ADD COLUMN embedding TEXT")
             if "side" not in cols:
                 conn.execute("ALTER TABLE parts ADD COLUMN side TEXT")
             if "lamp_type" not in cols:
@@ -89,8 +92,8 @@ class Database:
             cur = conn.execute("""
                 INSERT INTO parts
                     (part_number, car_brand, car_model, description,
-                     price, quantity, condition, market, side, lamp_type, photo_id, photo_ids)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     price, quantity, condition, market, side, lamp_type, photo_id, photo_ids, embedding)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 data.get("part_number"),
                 data.get("car_brand"),
@@ -104,6 +107,7 @@ class Database:
                 data.get("lamp_type"),
                 data.get("photo_id"),
                 data.get("photo_ids"),
+                data.get("embedding"),
             ))
             conn.commit()
             return cur.lastrowid
@@ -214,6 +218,27 @@ class Database:
             ).fetchall()
             return [dict(r) for r in rows]
 
+    def get_parts_with_photos(self) -> List[Dict]:
+        """Return all parts that have at least one photo."""
+        with self._connect() as conn:
+            rows = conn.execute(
+                """SELECT id, part_number, car_brand, car_model,
+                          photo_id, photo_ids, embedding
+                   FROM parts
+                   WHERE photo_id IS NOT NULL
+                   ORDER BY id"""
+            ).fetchall()
+            return [dict(r) for r in rows]
+
+    def update_embedding(self, part_id: int, embedding_json: str):
+        """Save embedding vector for a part."""
+        with self._connect() as conn:
+            conn.execute(
+                "UPDATE parts SET embedding=?, updated_at=CURRENT_TIMESTAMP WHERE id=?",
+                (embedding_json, part_id)
+            )
+            conn.commit()
+
     def get_known_brands(self) -> List[str]:
         """Return sorted list of all distinct car brands in DB."""
         with self._connect() as conn:
@@ -225,7 +250,7 @@ class Database:
     def update_field(self, part_id: int, field: str, value: Any):
         allowed = {
             "part_number", "car_brand", "car_model",
-            "description", "price", "quantity", "condition", "market", "side", "lamp_type", "photo_id", "photo_ids"
+            "description", "price", "quantity", "condition", "market", "side", "lamp_type", "photo_id", "photo_ids", "embedding"
         }
         if field not in allowed:
             raise ValueError(f"Field '{field}' is not allowed to update.")

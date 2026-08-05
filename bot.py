@@ -30,6 +30,7 @@ db = Database()
 
 SERPAPI_KEY       = os.environ.get("SERPAPI_KEY", "")
 GOOGLE_VISION_KEY = os.environ.get("GOOGLE_VISION_KEY", "")
+HF_TOKEN          = os.environ.get("HF_TOKEN", "")
 
 # Texts of persistent keyboard buttons (used to detect interruptions)
 KB = {"🔍 Пошук по номеру", "🚗 Пошук по авто",
@@ -868,7 +869,7 @@ async def search_by_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Skip if inside a conversation or waiting for vision photo
     if (context.user_data.get('new_part') is not None or
             context.user_data.get('edit_id') is not None or
-            context.user_data.get('awaiting') == 'vision_photo'):
+            context.user_data.get('awaiting') in ('vision_photo', 'clip_photo')):
         return
 
     if not SERPAPI_KEY:
@@ -972,6 +973,18 @@ async def search_by_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not parts and info["brand"] and info["model"]:
             parts = db.photo_search(brand=info["brand"], model=info["model"])
             if parts: search_level = "маркою та моделлю"
+
+        # Level 4: brand + lamp_type
+        if not parts and info["brand"] and info["lamp_type"]:
+            parts = db.photo_search(brand=info["brand"], lamp_type=info["lamp_type"])
+            if parts: search_level = "маркою та типом"
+
+        # Level 5: brand only — limited to 10
+        if not parts and info["brand"]:
+            all_brand = db.photo_search(brand=info["brand"])
+            if all_brand:
+                parts = all_brand[:10]
+                search_level = f"маркою {info['brand']} _(точного збігу не знайдено, показую перші {len(parts)})_"
 
         if not parts:
             await update.message.reply_text(
@@ -1129,17 +1142,29 @@ async def vision_search_photo(update: Update, context: ContextTypes.DEFAULT_TYPE
             parts = db.photo_search(part_number=part_number)
             if parts: search_level = f"номером `{part_number}`"
 
-        # Level 2: brand + model + lamp_type + side
+        # Level 2: brand + lamp_type + side
         if not parts and brand and lamp_type and side:
             parts = db.photo_search(brand=brand, lamp_type=lamp_type, side=side)
             if parts: search_level = "маркою, типом та стороною"
 
-        # Level 3: brand + model + lamp_type (без сторони)
+        # Level 3: brand + lamp_type (без сторони)
         if not parts and brand and lamp_type:
             parts = db.photo_search(brand=brand, lamp_type=lamp_type)
             if parts: search_level = "маркою та типом"
 
-        # Level 4: no match
+        # Level 4: brand + side (без типу)
+        if not parts and brand and side:
+            parts = db.photo_search(brand=brand, side=side)
+            if parts: search_level = "маркою та стороною"
+
+        # Level 5: brand only — limited to 10 results
+        if not parts and brand:
+            all_brand = db.photo_search(brand=brand)
+            if all_brand:
+                parts = all_brand[:10]
+                search_level = f"маркою {brand} _(точного збігу не знайдено, показую перші {len(parts)})_"
+
+        # Level 6: no match
         if not parts:
             await update.message.reply_text(
                 "❌ Збігів не знайдено.\n"
@@ -1161,6 +1186,187 @@ async def vision_search_photo(update: Update, context: ContextTypes.DEFAULT_TYPE
         await msg.edit_text("❌ Помилка під час аналізу. Спробуйте ще раз.")
 
 
+
+# ── CLIP VECTOR SEARCH ────────────────────────────────────────────────────────
+
+HF_CLIP_URL = "https://api-inference.huggingface.co/models/openai/clip-vit-base-patch32"
+
+
+async def _get_clip_embedding(image_bytes: bytes) -> list | None:
+    """Get CLIP embedding for an image via Hugging Face API."""
+    if not HF_TOKEN:
+        return None
+    try:
+        import base64
+        b64 = base64.b64encode(image_bytes).decode()
+        headers = {"Authorization": f"Bearer {HF_TOKEN}"}
+        payload = {"inputs": {"image": b64}}
+        resp = req_lib.post(HF_CLIP_URL, headers=headers, json=payload, timeout=30)
+        if resp.status_code == 200:
+            data = resp.json()
+            # HF returns embedding as list of floats
+            if isinstance(data, list) and len(data) > 0:
+                emb = data[0] if isinstance(data[0], list) else data
+                if isinstance(emb, list) and all(isinstance(x, (int, float)) for x in emb):
+                    return emb
+        return None
+    except Exception as e:
+        logger.error(f"CLIP embedding error: {e}")
+        return None
+
+
+def _cosine_similarity(a: list, b: list) -> float:
+    """Compute cosine similarity between two vectors."""
+    import math
+    dot   = sum(x * y for x, y in zip(a, b))
+    mag_a = math.sqrt(sum(x * x for x in a))
+    mag_b = math.sqrt(sum(x * x for x in b))
+    if mag_a == 0 or mag_b == 0:
+        return 0.0
+    return dot / (mag_a * mag_b)
+
+
+async def _ensure_embeddings(context: ContextTypes.DEFAULT_TYPE, status_msg=None):
+    """Build embeddings for parts that don't have them yet."""
+    parts = db.get_parts_with_photos()
+    missing = [p for p in parts if not p.get('embedding')]
+    if not missing:
+        return 0
+
+    count = 0
+    for part in missing:
+        try:
+            # Get file from Telegram
+            tg_file = await context.bot.get_file(part['photo_id'])
+            with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tmp:
+                await tg_file.download_to_drive(tmp.name)
+                with open(tmp.name, 'rb') as f:
+                    img_bytes = f.read()
+            os.unlink(tmp.name)
+
+            emb = await _get_clip_embedding(img_bytes)
+            if emb:
+                db.update_embedding(part['id'], json.dumps(emb))
+                count += 1
+        except Exception as e:
+            logger.error(f"Embedding error for part {part['id']}: {e}")
+            continue
+
+    return count
+
+
+async def clip_search_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """User pressed 📷 Пошук по фото button."""
+    if not HF_TOKEN:
+        await update.message.reply_text(
+            "⚠️ Пошук по фото не налаштовано.\n"
+            "Додайте HF_TOKEN у .env файл."
+        )
+        return
+
+    context.user_data['awaiting'] = 'clip_photo'
+    await update.message.reply_text(
+        "📷 *Пошук по фото*\n\n"
+        "Надішліть фото запчастини — бот знайде найбільш схожі в базі.",
+        parse_mode="Markdown"
+    )
+
+
+async def clip_search_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle photo for CLIP similarity search."""
+    if context.user_data.get('awaiting') != 'clip_photo':
+        return
+
+    context.user_data.pop('awaiting', None)
+
+    msg = await update.message.reply_text("🔍 Аналізую фото...")
+
+    try:
+        # Download query photo
+        photo   = update.message.photo[-1]
+        tg_file = await context.bot.get_file(photo.file_id)
+        with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tmp:
+            await tg_file.download_to_drive(tmp.name)
+            with open(tmp.name, 'rb') as f:
+                query_bytes = f.read()
+        os.unlink(tmp.name)
+
+        # Get embedding for query
+        await msg.edit_text("🔍 Обробляю фото...")
+        query_emb = await _get_clip_embedding(query_bytes)
+        if query_emb is None:
+            await msg.edit_text(
+                "❌ Не вдалось обробити фото.\n"
+                "Перевірте HF_TOKEN або спробуйте пізніше."
+            )
+            return
+
+        # Build missing embeddings if needed
+        await msg.edit_text("⏳ Порівнюю з базою...")
+        built = await _ensure_embeddings(context, msg)
+        if built > 0:
+            logger.info(f"Built {built} new embeddings")
+
+        # Compare with all parts in DB
+        parts = db.get_parts_with_photos()
+        scored = []
+        for part in parts:
+            if not part.get('embedding'):
+                continue
+            try:
+                db_emb  = json.loads(part['embedding'])
+                sim     = _cosine_similarity(query_emb, db_emb)
+                scored.append((sim, part['id']))
+            except Exception:
+                continue
+
+        if not scored:
+            await msg.edit_text(
+                "❌ В базі немає фото для порівняння.\n"
+                "Спочатку додайте запчастини з фото."
+            )
+            return
+
+        # Sort by similarity, take top results above threshold
+        scored.sort(reverse=True)
+        THRESHOLD = 0.70
+        top = [(sim, pid) for sim, pid in scored if sim >= THRESHOLD][:10]
+
+        if not top:
+            # Show best match even if below threshold
+            best_sim, best_pid = scored[0]
+            await msg.edit_text(
+                f"🤷 Схожих запчастин не знайдено.\n"
+                f"Найближчий збіг: {best_sim*100:.0f}% — надто мало для точного результату.\n\n"
+                "Спробуйте ввести пошуковий запит вручну."
+            )
+            return
+
+        await msg.edit_text(
+            f"✅ Знайдено *{len(top)}* схожих запчастин:",
+            parse_mode="Markdown"
+        )
+
+        for sim, pid in top:
+            part = db.get_by_id(pid)
+            # Add similarity score to card
+            text   = _part_text(part) + f"\n🎯 Схожість: *{sim*100:.0f}%*"
+            markup = _part_keyboard(part)
+            if part.get('photo_id'):
+                await update.message.reply_photo(
+                    photo=part['photo_id'], caption=text,
+                    reply_markup=markup, parse_mode="Markdown"
+                )
+            else:
+                await update.message.reply_text(
+                    text, reply_markup=markup, parse_mode="Markdown"
+                )
+
+    except Exception as e:
+        logger.error(f"CLIP search error: {e}")
+        await msg.edit_text("❌ Помилка під час пошуку. Спробуйте ще раз.")
+
+
 # ── FREE TEXT ─────────────────────────────────────────────────────────────────
 async def free_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text    = update.message.text.strip()
@@ -1174,7 +1380,7 @@ async def free_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if text == "📷 Пошук по фото":
-        await vision_search_start(update, context)
+        await clip_search_start(update, context)
         return
     if text == "🔍 Пошук по номеру":
         await update.message.reply_text("🔍 Введіть номер запчастини:")
@@ -1271,7 +1477,7 @@ def main():
     app.add_handler(CallbackQueryHandler(delete_confirm, pattern=r"^delete_\d+$"))
     app.add_handler(CallbackQueryHandler(delete_execute, pattern=r"^del_(yes_\d+|no)$"))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, free_text))
-    app.add_handler(MessageHandler(filters.PHOTO, vision_search_photo))
+    app.add_handler(MessageHandler(filters.PHOTO, clip_search_photo))
     app.add_handler(MessageHandler(filters.PHOTO, search_by_photo))
 
     print("🤖 Бот запущено!")
