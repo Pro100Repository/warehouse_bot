@@ -149,7 +149,7 @@ class Database:
             return [dict(r) for r in rows]
 
     def smart_search(self, query: str) -> List[Dict]:
-        """Search by partial number, brand, model, or any combination."""
+        """Search by partial number, brand, model, description, side or lamp_type."""
         q = f"%{query.strip()}%"
         with self._connect() as conn:
             rows = conn.execute(
@@ -158,8 +158,59 @@ class Database:
                       OR UPPER(car_brand)   LIKE UPPER(?)
                       OR UPPER(car_model)   LIKE UPPER(?)
                       OR UPPER(description) LIKE UPPER(?)
+                      OR UPPER(COALESCE(side,''))      LIKE UPPER(?)
+                      OR UPPER(COALESCE(lamp_type,'')) LIKE UPPER(?)
                    ORDER BY car_brand, car_model, part_number""",
-                (q, q, q, q)
+                (q, q, q, q, q, q)
+            ).fetchall()
+            return [dict(r) for r in rows]
+
+    def photo_search(self,
+                     brand: Optional[str] = None,
+                     model: Optional[str] = None,
+                     lamp_type: Optional[str] = None,
+                     side: Optional[str] = None,
+                     part_number: Optional[str] = None) -> List[Dict]:
+        """
+        Flexible search for photo-based lookup.
+        Each parameter is optional — matched with LIKE if provided.
+        Results sorted by number of matched fields (best match first).
+        """
+        conditions = []
+        params     = []
+
+        if part_number:
+            conditions.append("UPPER(part_number) LIKE UPPER(?)")
+            params.append(f"%{part_number}%")
+        if brand:
+            conditions.append("UPPER(car_brand) LIKE UPPER(?)")
+            params.append(f"%{brand}%")
+        if model:
+            conditions.append("UPPER(car_model) LIKE UPPER(?)")
+            params.append(f"%{model}%")
+        if lamp_type:
+            conditions.append("UPPER(COALESCE(lamp_type,'')) LIKE UPPER(?)")
+            params.append(f"%{lamp_type}%")
+        if side:
+            conditions.append("UPPER(COALESCE(side,'')) LIKE UPPER(?)")
+            params.append(f"%{side}%")
+
+        if not conditions:
+            return []
+
+        # Score = number of matched conditions (best match first)
+        score_expr = " + ".join(
+            f"CASE WHEN {c} THEN 1 ELSE 0 END" for c in conditions
+        )
+        where_clause = " OR ".join(conditions)
+
+        with self._connect() as conn:
+            rows = conn.execute(
+                f"""SELECT *, ({score_expr}) AS match_score
+                    FROM parts
+                    WHERE {where_clause}
+                    ORDER BY match_score DESC, car_brand, car_model, part_number""",
+                params + params  # params used twice: for score_expr + for WHERE
             ).fetchall()
             return [dict(r) for r in rows]
 
