@@ -123,7 +123,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [[KeyboardButton("🔍 Пошук по номеру"), KeyboardButton("🚗 Пошук по авто")],
          [KeyboardButton("➕ Додати запчастину"), KeyboardButton("📋 Всі запчастини")],
          [KeyboardButton("📷 Пошук по фото"), KeyboardButton("ℹ️ Допомога")]],
-        resize_keyboard=True, is_persistent=True,
+        resize_keyboard=True, 
     )
     await update.message.reply_text(
         "🔧 *Склад автозапчастин*\n\nОберіть дію:",
