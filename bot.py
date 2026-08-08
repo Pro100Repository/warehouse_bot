@@ -912,17 +912,41 @@ async def clip_search_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         # Sort by similarity, take top results above threshold
         scored.sort(reverse=True)
-        THRESHOLD = 0.70
+        # ВАЖЛИВО: у CLIP навіть повністю різні зображення часто дають
+        # cosine similarity 60-80% через особливості векторного простору
+        # моделі (anisotropy). Тому поріг має бути значно вищим, ніж
+        # здається інтуїтивно — 0.90+ це вже дійсно схожі зображення.
+        THRESHOLD = 0.90
         top = [(sim, pid) for sim, pid in scored if sim >= THRESHOLD][:10]
 
         if not top:
-            # Show best match even if below threshold
+            # Show best match even if below threshold, with a clear warning
             best_sim, best_pid = scored[0]
-            await msg.edit_text(
-                f"🤷 Схожих запчастин не знайдено.\n"
-                f"Найближчий збіг: {best_sim*100:.0f}% — надто мало для точного результату.\n\n"
-                "Спробуйте ввести пошуковий запит вручну."
+            best_part = db.get_by_id(best_pid)
+            text = (
+                f"🤷 Точних збігів не знайдено (поріг {THRESHOLD*100:.0f}%).\n\n"
+                f"Найближчий результат — *{best_sim*100:.0f}%* схожості, "
+                "але це, ймовірно, *не та сама деталь*.\n\n"
+                "Спробуйте ввести пошуковий запит вручну (марка, модель, "
+                "тип, номер) для точнішого результату."
             )
+            await msg.edit_text(text, parse_mode="Markdown")
+
+            # Показуємо найближчий варіант окремо, з чіткою позначкою
+            show_text = _part_text(best_part) + (
+                f"\n\n⚠️ Схожість лише *{best_sim*100:.0f}%* — "
+                "можливо, це не та деталь"
+            )
+            markup = _part_keyboard(best_part)
+            if best_part.get('photo_id'):
+                await update.message.reply_photo(
+                    photo=best_part['photo_id'], caption=show_text,
+                    reply_markup=markup, parse_mode="Markdown"
+                )
+            else:
+                await update.message.reply_text(
+                    show_text, reply_markup=markup, parse_mode="Markdown"
+                )
             return
 
         await msg.edit_text(
