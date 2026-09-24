@@ -543,6 +543,9 @@ async def _save_part(message, context: ContextTypes.DEFAULT_TYPE):
     await send_part_card(message, part)
     context.user_data.clear()
     return ConversationHandler.END
+
+
+async def handle_duplicate(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
     data    = context.user_data.get('new_part', {})
