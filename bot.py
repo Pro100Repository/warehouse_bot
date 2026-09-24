@@ -21,7 +21,7 @@ PHOTO_VISION_WAIT = 99  # waiting for photo for vision search
 
 (ADD_NUMBER, ADD_BRAND, ADD_MODEL, ADD_DESCRIPTION,
  ADD_PRICE, ADD_QUANTITY, ADD_CONDITION, ADD_MARKET,
- ADD_SIDE, ADD_LAMP_TYPE, ADD_PHOTO, DUPLICATE_ACTION,
+ ADD_LAMP_TYPE, ADD_SIDE, ADD_PHOTO, DUPLICATE_ACTION,
  EDIT_CHOOSE, EDIT_VALUE,
  QTY_CHANGE) = range(15)
 
@@ -104,8 +104,15 @@ async def _smart_search(message, query: str):
         )
         return
     if len(parts) > 30:
+        import urllib.parse
+        kb = [[InlineKeyboardButton(
+            f"📋 Показати всі ({len(parts)})",
+            callback_data=f"show_all:{urllib.parse.quote(query)}"
+        )]]
         await message.reply_text(
-            f"🔍 Знайдено *{len(parts)}* результатів — забагато. Уточніть запит.",
+            f"🔍 Знайдено *{len(parts)}* результатів — забагато для відображення.\n"
+            "Уточніть запит або натисніть кнопку щоб побачити всі:",
+            reply_markup=InlineKeyboardMarkup(kb),
             parse_mode="Markdown"
         )
         return
@@ -114,6 +121,20 @@ async def _smart_search(message, query: str):
     )
     for part in parts:
         await send_part_card(message, part)
+
+
+async def show_all_results(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show all results when user presses 'Show all' button."""
+    import urllib.parse
+    q = update.callback_query
+    await q.answer()
+    query = urllib.parse.unquote(q.data.split(":", 1)[1])
+    parts = db.smart_search(query)
+    await q.message.reply_text(
+        f"🔍 Знайдено: *{len(parts)}* шт. за *{query}*", parse_mode="Markdown"
+    )
+    for part in parts:
+        await send_part_card(q.message, part)
 
 
 # ── /start  /help ─────────────────────────────────────────────────────────────
@@ -398,7 +419,7 @@ async def add_market(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
     context.user_data['new_part']['market'] = None if q.data == "skip_market" else q.data.replace("market_", "")
-    return await _ask_side(q.message)
+    return await _ask_lamp_type(q.message)
 
 
 async def _ask_side(msg):
@@ -408,7 +429,7 @@ async def _ask_side(msg):
         [InlineKeyboardButton("⏭ Пропустити", callback_data="skip_side")],
     ]
     await msg.reply_text(
-        "Крок 9/11 — Оберіть *сторону*:",
+        "Крок 10/11 — Оберіть *сторону*:",
         reply_markup=InlineKeyboardMarkup(kb), parse_mode="Markdown"
     )
     return ADD_SIDE
@@ -418,7 +439,7 @@ async def add_side(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
     context.user_data['new_part']['side'] = None if q.data == "skip_side" else q.data.replace("side_", "")
-    return await _ask_lamp_type(q.message)
+    return await _ask_photo(q.message)
 
 
 async def _ask_lamp_type(msg):
@@ -430,17 +451,29 @@ async def _ask_lamp_type(msg):
         [InlineKeyboardButton("⏭ Пропустити", callback_data="skip_lamp")],
     ]
     await msg.reply_text(
-        "Крок 10/11 — Оберіть *тип*:",
+        "Крок 9/11 — Оберіть *тип* запчастини:",
         reply_markup=InlineKeyboardMarkup(kb), parse_mode="Markdown"
     )
     return ADD_LAMP_TYPE
 
 
+# Типи, для яких сторона НЕ потрібна
+_NO_SIDE_TYPES = {"Бленда"}
+
+
 async def add_lamp_type(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
-    context.user_data['new_part']['lamp_type'] = None if q.data == "skip_lamp" else q.data.replace("lamp_", "")
-    return await _ask_photo(q.message)
+    lamp = None if q.data == "skip_lamp" else q.data.replace("lamp_", "")
+    context.user_data['new_part']['lamp_type'] = lamp
+
+    # Бленда (центральний задній ліхтар) — сторони немає, одразу фото
+    if lamp in _NO_SIDE_TYPES:
+        context.user_data['new_part']['side'] = None
+        return await _ask_photo(q.message)
+
+    # Передня / Задня / Кузов / Пропущено → питаємо сторону
+    return await _ask_side(q.message)
 
 
 async def _ask_photo(msg):
@@ -510,9 +543,6 @@ async def _save_part(message, context: ContextTypes.DEFAULT_TYPE):
     await send_part_card(message, part)
     context.user_data.clear()
     return ConversationHandler.END
-
-
-async def handle_duplicate(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
     data    = context.user_data.get('new_part', {})
@@ -1010,6 +1040,12 @@ async def free_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if waiting in ('search_num', 'search_car'):
         context.user_data.pop('awaiting', None)
 
+    # Не запускати пошук якщо користувач в процесі додавання/редагування
+    if context.user_data.get('new_part') is not None:
+        return
+    if context.user_data.get('edit_id') is not None:
+        return
+
     await _smart_search(update.message, text)
 
 
@@ -1041,8 +1077,8 @@ def main():
             ADD_QUANTITY:     [MessageHandler(filters.TEXT & ~filters.COMMAND, add_quantity)],
             ADD_CONDITION:    [CallbackQueryHandler(add_condition, pattern=r"^(cond_|skip_condition)")],
             ADD_MARKET:       [CallbackQueryHandler(add_market, pattern=r"^(market_|skip_market)")],
-            ADD_SIDE:         [CallbackQueryHandler(add_side, pattern=r"^(side_|skip_side)")],
             ADD_LAMP_TYPE:    [CallbackQueryHandler(add_lamp_type, pattern=r"^(lamp_|skip_lamp)")],
+            ADD_SIDE:         [CallbackQueryHandler(add_side, pattern=r"^(side_|skip_side)")],
             ADD_PHOTO:        [MessageHandler(filters.PHOTO, add_photo),
                                CallbackQueryHandler(skip_photo, pattern="^skip_photo$")],
             DUPLICATE_ACTION: [CallbackQueryHandler(handle_duplicate, pattern=r"^dup_")],
@@ -1083,6 +1119,7 @@ def main():
     app.add_handler(CallbackQueryHandler(qty_minus,      pattern=r"^qty_minus_\d+$"))
     app.add_handler(CallbackQueryHandler(delete_confirm, pattern=r"^delete_\d+$"))
     app.add_handler(CallbackQueryHandler(delete_execute, pattern=r"^del_(yes_\d+|no)$"))
+    app.add_handler(CallbackQueryHandler(show_all_results, pattern=r"^show_all:"))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, free_text))
     app.add_handler(MessageHandler(filters.PHOTO, clip_search_photo))
 
