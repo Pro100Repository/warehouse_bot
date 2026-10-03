@@ -741,6 +741,11 @@ async def edit_value(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if q:
         await q.answer()
 
+        if q.data == "edit_cancel":
+            _finish_conversation(context)
+            await q.message.reply_text("❌ Скасовано.")
+            return ConversationHandler.END
+
         # Condition multi-select
         if q.data.startswith("econd_"):
             label    = q.data.replace("econd_", "")
@@ -1151,7 +1156,7 @@ def main():
             EDIT_CHOOSE: [CallbackQueryHandler(edit_choose, pattern=r"^(ef_|edit_cancel)")],
             EDIT_VALUE:  [MessageHandler(filters.TEXT & ~filters.COMMAND, edit_value),
                           MessageHandler(filters.PHOTO, edit_value),
-                          CallbackQueryHandler(edit_value, pattern=r"^(econd_|emarket_|eside_|elamp_|ephoto_done|ephoto_mode_)")],
+                          CallbackQueryHandler(edit_value, pattern=r"^(econd_|emarket_|eside_|elamp_|ephoto_done|ephoto_mode_|edit_cancel)")],
         },
         fallbacks=[CommandHandler("cancel", cancel)],
         allow_reentry=True,
