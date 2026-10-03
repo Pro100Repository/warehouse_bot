@@ -165,14 +165,25 @@ class Database:
         if not tokens:
             return []
 
-        FIELDS = [
-            "UPPER(part_number)",
-            "UPPER(car_brand)",
-            "UPPER(car_model)",
-            "UPPER(description)",
-            "UPPER(COALESCE(side,''))",
-            "UPPER(COALESCE(lamp_type,''))",
-        ]
+        # При пошуку кількох слів (напр. "BMW 4") номер деталі не враховуємо,
+        # щоб уникнути хибних збігів по цифрах у номерах
+        if len(tokens) > 1:
+            FIELDS = [
+                "UPPER(car_brand)",
+                "UPPER(car_model)",
+                "UPPER(description)",
+                "UPPER(COALESCE(side,''))",
+                "UPPER(COALESCE(lamp_type,''))",
+            ]
+        else:
+            FIELDS = [
+                "UPPER(part_number)",
+                "UPPER(car_brand)",
+                "UPPER(car_model)",
+                "UPPER(description)",
+                "UPPER(COALESCE(side,''))",
+                "UPPER(COALESCE(lamp_type,''))",
+            ]
 
         with self._connect() as conn:
             # ── Score expression: count how many tokens match any field ──────
