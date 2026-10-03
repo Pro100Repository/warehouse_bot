@@ -648,17 +648,21 @@ async def edit_choose(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data['edit_cond'] = current
         return await _edit_condition_kb(q.message, current)
 
+    CANCEL_BTN = [[InlineKeyboardButton("❌ Скасувати", callback_data="edit_cancel")]]
+
     if field == "market":
-        kb = [[InlineKeyboardButton("🇪🇺 EU", callback_data="emarket_EU"),
+        kb = [[InlineKeyboardButton("🇪🇺 EU",  callback_data="emarket_EU"),
                InlineKeyboardButton("🇺🇸 USA", callback_data="emarket_USA")],
-              [InlineKeyboardButton("❌ Прибрати", callback_data="emarket_None")]]
+              [InlineKeyboardButton("❌ Прибрати", callback_data="emarket_None")],
+              *CANCEL_BTN]
         await q.message.reply_text("Оберіть ринок:", reply_markup=InlineKeyboardMarkup(kb))
         return EDIT_VALUE
 
     if field == "side":
-        kb = [[InlineKeyboardButton("⬅️ Ліва", callback_data="eside_Ліва"),
+        kb = [[InlineKeyboardButton("⬅️ Ліва",  callback_data="eside_Ліва"),
                InlineKeyboardButton("➡️ Права", callback_data="eside_Права")],
-              [InlineKeyboardButton("❌ Прибрати", callback_data="eside_None")]]
+              [InlineKeyboardButton("❌ Прибрати", callback_data="eside_None")],
+              *CANCEL_BTN]
         await q.message.reply_text("Оберіть сторону:", reply_markup=InlineKeyboardMarkup(kb))
         return EDIT_VALUE
 
@@ -667,7 +671,8 @@ async def edit_choose(update: Update, context: ContextTypes.DEFAULT_TYPE):
                InlineKeyboardButton("🔴 Задня",   callback_data="elamp_Задня")],
               [InlineKeyboardButton("🪟 Бленда",  callback_data="elamp_Бленда"),
                InlineKeyboardButton("🚗 Кузов",   callback_data="elamp_Кузов")],
-              [InlineKeyboardButton("❌ Прибрати", callback_data="elamp_None")]]
+              [InlineKeyboardButton("❌ Прибрати", callback_data="elamp_None")],
+              *CANCEL_BTN]
         await q.message.reply_text("Оберіть тип:", reply_markup=InlineKeyboardMarkup(kb))
         return EDIT_VALUE
 
@@ -684,7 +689,7 @@ async def edit_choose(update: Update, context: ContextTypes.DEFAULT_TYPE):
             kb = [
                 [InlineKeyboardButton(f"➕ Додати до існуючих ({n} фото)", callback_data="ephoto_mode_add")],
                 [InlineKeyboardButton("🔄 Замінити всі фото",              callback_data="ephoto_mode_replace")],
-                [InlineKeyboardButton("❌ Скасувати",                       callback_data="edit_cancel")],
+                *CANCEL_BTN,
             ]
             await q.message.reply_text(
                 f"📸 Зараз збережено *{n} фото*. Що робимо?",
@@ -694,7 +699,7 @@ async def edit_choose(update: Update, context: ContextTypes.DEFAULT_TYPE):
             context.user_data['edit_photo_mode'] = 'replace'
             await q.message.reply_text(
                 "📸 Надішліть фото _(можна кілька по черзі)_, потім натисніть *Зберегти*:",
-                parse_mode="Markdown"
+                reply_markup=InlineKeyboardMarkup(CANCEL_BTN), parse_mode="Markdown"
             )
         return EDIT_VALUE
 
@@ -711,6 +716,7 @@ async def edit_choose(update: Update, context: ContextTypes.DEFAULT_TYPE):
     current_str = f"\n\nПоточне значення:\n`{current}`" if current not in (None, '', 0) else ""
     await q.message.reply_text(
         f"✏️ Введіть новий {labels.get(field, field)}:{current_str}",
+        reply_markup=InlineKeyboardMarkup(CANCEL_BTN),
         parse_mode="Markdown"
     )
     return EDIT_VALUE
@@ -725,6 +731,7 @@ async def _edit_condition_kb(msg, selected):
         [ebtn("До роботи", "🔧"), ebtn("Битий", "💥")],
         [ebtn("DP", "🔵")],
         [InlineKeyboardButton("✔️ Підтвердити", callback_data="econd_confirm")],
+        [InlineKeyboardButton("❌ Скасувати",    callback_data="edit_cancel")],
     ]
     await msg.reply_text(
         "Оберіть стан _(можна кілька)_:",
