@@ -44,6 +44,34 @@ def _finish_conversation(context: ContextTypes.DEFAULT_TYPE):
     context.chat_data['_just_finished'] = True
 
 
+def _edit_menu_kb(part: dict) -> InlineKeyboardMarkup:
+    """Клавіатура вибору поля редагування."""
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🔢 Номер",     callback_data="ef_part_number"),
+         InlineKeyboardButton("🚗 Марка",     callback_data="ef_car_brand")],
+        [InlineKeyboardButton("🚙 Модель",    callback_data="ef_car_model"),
+         InlineKeyboardButton("📝 Опис",      callback_data="ef_description")],
+        [InlineKeyboardButton("💰 Ціна",      callback_data="ef_price"),
+         InlineKeyboardButton("📦 Кількість", callback_data="ef_quantity")],
+        [InlineKeyboardButton("🔧 Стан",      callback_data="ef_condition"),
+         InlineKeyboardButton("🌍 EU/USA",    callback_data="ef_market")],
+        [InlineKeyboardButton("↔️ Сторона",   callback_data="ef_side"),
+         InlineKeyboardButton("💡 Тип",       callback_data="ef_lamp_type")],
+        [InlineKeyboardButton("🖼 Фото",      callback_data="ef_photo")],
+        [InlineKeyboardButton("✅ Готово",     callback_data="edit_done")],
+    ])
+
+
+async def _back_to_edit_menu(msg, context, part: dict):
+    """Після збереження поля — повертає меню редагування."""
+    context.user_data['edit_field'] = None
+    await send_part_card(msg, part)
+    await msg.reply_text(
+        f"✏️ Редагування *{part['part_number']}*\nОберіть наступне поле або натисніть Готово:",
+        reply_markup=_edit_menu_kb(part), parse_mode="Markdown"
+    )
+
+
 # ── Helpers ───────────────────────────────────────────────────────────────────
 def _part_text(part: dict) -> str:
     qty_emoji = "✅" if part['quantity'] > 0 else "❌"
@@ -608,23 +636,9 @@ async def edit_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     pid = int(q.data.split("_")[1])
     context.user_data['edit_id'] = pid
     part = db.get_by_id(pid)
-    kb = [
-        [InlineKeyboardButton("🔢 Номер",    callback_data="ef_part_number"),
-         InlineKeyboardButton("🚗 Марка",    callback_data="ef_car_brand")],
-        [InlineKeyboardButton("🚙 Модель",   callback_data="ef_car_model"),
-         InlineKeyboardButton("📝 Опис",     callback_data="ef_description")],
-        [InlineKeyboardButton("💰 Ціна",     callback_data="ef_price"),
-         InlineKeyboardButton("📦 Кількість",callback_data="ef_quantity")],
-        [InlineKeyboardButton("🔧 Стан",     callback_data="ef_condition"),
-         InlineKeyboardButton("🌍 EU/USA",   callback_data="ef_market")],
-        [InlineKeyboardButton("↔️ Сторона",  callback_data="ef_side"),
-         InlineKeyboardButton("💡 Тип",      callback_data="ef_lamp_type")],
-        [InlineKeyboardButton("🖼 Фото",     callback_data="ef_photo")],
-        [InlineKeyboardButton("❌ Скасувати", callback_data="edit_cancel")],
-    ]
     await q.message.reply_text(
         f"✏️ Редагування *{part['part_number']}*\nОберіть поле:",
-        reply_markup=InlineKeyboardMarkup(kb), parse_mode="Markdown"
+        reply_markup=_edit_menu_kb(part), parse_mode="Markdown"
     )
     return EDIT_CHOOSE
 
@@ -633,8 +647,13 @@ async def edit_choose(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
 
+    if q.data == "edit_done":
+        _finish_conversation(context)
+        await q.message.reply_text("✅ Редагування завершено.")
+        return ConversationHandler.END
+
     if q.data == "edit_cancel":
-        context.user_data.clear()
+        _finish_conversation(context)
         await q.message.reply_text("❌ Скасовано.")
         return ConversationHandler.END
 
@@ -762,9 +781,8 @@ async def edit_value(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 db.update_field(pid, "condition", value)
                 part  = db.get_by_id(pid)
                 await q.message.reply_text("✅ Стан оновлено!")
-                await send_part_card(q.message, part)
-                _finish_conversation(context)
-                return ConversationHandler.END
+                await _back_to_edit_menu(q.message, context, part)
+                return EDIT_CHOOSE
             if label in selected: selected.remove(label)
             else: selected.append(label)
             context.user_data['edit_cond'] = selected
@@ -808,9 +826,8 @@ async def edit_value(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 db.update_field(pid, "photo_ids", json.dumps(all_photos[1:]) if len(all_photos) > 1 else None)
             part = db.get_by_id(pid)
             await q.message.reply_text(f"✅ Фото оновлено! Збережено: {len(all_photos)} шт.")
-            await send_part_card(q.message, part)
-            _finish_conversation(context)
-            return ConversationHandler.END
+            await _back_to_edit_menu(q.message, context, part)
+            return EDIT_CHOOSE
 
         # Single-choice callbacks
         for prefix, db_field in [("emarket_","market"), ("eside_","side"), ("elamp_","lamp_type")]:
@@ -820,9 +837,8 @@ async def edit_value(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 db.update_field(pid, db_field, value)
                 part  = db.get_by_id(pid)
                 await q.message.reply_text("✅ Оновлено!")
-                await send_part_card(q.message, part)
-                _finish_conversation(context)
-                return ConversationHandler.END
+                await _back_to_edit_menu(q.message, context, part)
+                return EDIT_CHOOSE
 
     else:
         # Text or photo input
@@ -847,9 +863,8 @@ async def edit_value(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 db.update_field(pid, "photo_ids", json.dumps(all_photos[1:]) if len(all_photos) > 1 else None)
             part = db.get_by_id(pid)
             await update.message.reply_text(f"✅ Фото оновлено! Збережено: {len(all_photos)} шт.")
-            await send_part_card(update.message, part)
-            _finish_conversation(context)
-            return ConversationHandler.END
+            await _back_to_edit_menu(update.message, context, part)
+            return EDIT_CHOOSE
         elif field == "price":
             try:
                 value = float(update.message.text.strip().replace(",", "."))
@@ -869,9 +884,8 @@ async def edit_value(update: Update, context: ContextTypes.DEFAULT_TYPE):
         db.update_field(pid, field, value)
         part = db.get_by_id(pid)
         await update.message.reply_text("✅ Оновлено!")
-        await send_part_card(update.message, part)
-        _finish_conversation(context)
-        return ConversationHandler.END
+        await _back_to_edit_menu(update.message, context, part)
+        return EDIT_CHOOSE
 
 
 # ── DELETE ────────────────────────────────────────────────────────────────────
@@ -1160,7 +1174,7 @@ def main():
     edit_conv = ConversationHandler(
         entry_points=[CallbackQueryHandler(edit_start, pattern=r"^edit_\d+$")],
         states={
-            EDIT_CHOOSE: [CallbackQueryHandler(edit_choose, pattern=r"^(ef_|edit_cancel)")],
+            EDIT_CHOOSE: [CallbackQueryHandler(edit_choose, pattern=r"^(ef_|edit_cancel|edit_done)")],
             EDIT_VALUE:  [MessageHandler(filters.TEXT & ~filters.COMMAND, edit_value),
                           MessageHandler(filters.PHOTO, edit_value),
                           CallbackQueryHandler(edit_value, pattern=r"^(econd_|emarket_|eside_|elamp_|ephoto_done|ephoto_mode_|edit_cancel)")],
