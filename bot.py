@@ -37,6 +37,13 @@ def _is_kb(text: str) -> bool:
     return text.strip() in KB
 
 
+def _finish_conversation(context: ContextTypes.DEFAULT_TYPE):
+    """Очищає user_data і встановлює прапорець у chat_data щоб
+    free_text не запускав пошук по останньому введеному тексту."""
+    context.user_data.clear()
+    context.chat_data['_just_finished'] = True
+
+
 # ── Helpers ───────────────────────────────────────────────────────────────────
 def _part_text(part: dict) -> str:
     qty_emoji = "✅" if part['quantity'] > 0 else "❌"
@@ -541,7 +548,7 @@ async def _save_part(message, context: ContextTypes.DEFAULT_TYPE):
     part    = db.get_by_id(part_id)
     await message.reply_text("✅ *Запчастину додано!*", parse_mode="Markdown")
     await send_part_card(message, part)
-    context.user_data.clear()
+    _finish_conversation(context)
     return ConversationHandler.END
 
 
@@ -564,7 +571,7 @@ async def handle_duplicate(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await q.message.reply_text("❌ Скасовано.")
 
-    context.user_data.clear()
+    _finish_conversation(context)
     return ConversationHandler.END
 
 
@@ -665,23 +672,47 @@ async def edit_choose(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return EDIT_VALUE
 
     if field == "photo":
-        await q.message.reply_text(
-            "📸 Надішліть фото _(можна кілька по черзі)_\n"
-            "Потім натисніть /done або надішліть /done щоб зберегти:",
-            parse_mode="Markdown"
-        )
-        context.user_data['edit_photos'] = []
+        part = db.get_by_id(pid)
+        existing = [part['photo_id']] if part.get('photo_id') else []
+        if part.get('photo_ids'):
+            try: existing += json.loads(part['photo_ids'])
+            except Exception: pass
+        context.user_data['edit_photos']          = []
+        context.user_data['edit_photos_existing'] = existing
+        n = len(existing)
+        if n:
+            kb = [
+                [InlineKeyboardButton(f"➕ Додати до існуючих ({n} фото)", callback_data="ephoto_mode_add")],
+                [InlineKeyboardButton("🔄 Замінити всі фото",              callback_data="ephoto_mode_replace")],
+                [InlineKeyboardButton("❌ Скасувати",                       callback_data="edit_cancel")],
+            ]
+            await q.message.reply_text(
+                f"📸 Зараз збережено *{n} фото*. Що робимо?",
+                reply_markup=InlineKeyboardMarkup(kb), parse_mode="Markdown"
+            )
+        else:
+            context.user_data['edit_photo_mode'] = 'replace'
+            await q.message.reply_text(
+                "📸 Надішліть фото _(можна кілька по черзі)_, потім натисніть *Зберегти*:",
+                parse_mode="Markdown"
+            )
         return EDIT_VALUE
 
     labels = {
-        "part_number": "новий номер",
-        "car_brand":   "нову марку авто",
-        "car_model":   "нову модель авто",
-        "description": "новий опис",
-        "price":       "нову ціну (грн)",
-        "quantity":    "нову кількість",
+        "part_number": "номер",
+        "car_brand":   "марку авто",
+        "car_model":   "модель авто",
+        "description": "опис",
+        "price":       "ціну (грн)",
+        "quantity":    "кількість",
     }
-    await q.message.reply_text(f"✏️ Введіть {labels.get(field, field)}:")
+    part = db.get_by_id(pid)
+    current = part.get(field)
+    current_str = f"\n\nПоточне значення:\n`{current}`" if current not in (None, '', 0) else ""
+    await q.message.reply_text(
+        f"✏️ Введіть новий {labels.get(field, field)}:{current_str}",
+        parse_mode="Markdown"
+    )
     return EDIT_VALUE
 
 
@@ -720,7 +751,7 @@ async def edit_value(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 part  = db.get_by_id(pid)
                 await q.message.reply_text("✅ Стан оновлено!")
                 await send_part_card(q.message, part)
-                context.user_data.clear()
+                _finish_conversation(context)
                 return ConversationHandler.END
             if label in selected: selected.remove(label)
             else: selected.append(label)
@@ -740,16 +771,33 @@ async def edit_value(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 pass
             return EDIT_VALUE
 
+        # Choose photo mode: add to existing or replace all
+        if q.data in ("ephoto_mode_add", "ephoto_mode_replace"):
+            mode = "add" if q.data == "ephoto_mode_add" else "replace"
+            context.user_data['edit_photo_mode'] = mode
+            label = "додайте нові фото" if mode == "add" else "надішліть нові фото (замінять усі попередні)"
+            await q.message.reply_text(
+                f"📸 Тепер {label}.\nНатисніть *Зберегти* коли готово:",
+                parse_mode="Markdown"
+            )
+            return EDIT_VALUE
+
         # Save multiple edit photos
         if q.data == "ephoto_done":
-            photos = context.user_data.pop('edit_photos', [])
-            if photos:
-                db.update_field(pid, "photo_id", photos[0])
-                db.update_field(pid, "photo_ids", json.dumps(photos[1:]) if len(photos) > 1 else None)
+            new_photos = context.user_data.pop('edit_photos', [])
+            mode       = context.user_data.pop('edit_photo_mode', 'replace')
+            existing   = context.user_data.pop('edit_photos_existing', [])
+            if mode == "add":
+                all_photos = existing + new_photos
+            else:
+                all_photos = new_photos if new_photos else existing
+            if all_photos:
+                db.update_field(pid, "photo_id",  all_photos[0])
+                db.update_field(pid, "photo_ids", json.dumps(all_photos[1:]) if len(all_photos) > 1 else None)
             part = db.get_by_id(pid)
-            await q.message.reply_text("✅ Фото оновлено!")
+            await q.message.reply_text(f"✅ Фото оновлено! Збережено: {len(all_photos)} шт.")
             await send_part_card(q.message, part)
-            context.user_data.clear()
+            _finish_conversation(context)
             return ConversationHandler.END
 
         # Single-choice callbacks
@@ -761,7 +809,7 @@ async def edit_value(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 part  = db.get_by_id(pid)
                 await q.message.reply_text("✅ Оновлено!")
                 await send_part_card(q.message, part)
-                context.user_data.clear()
+                _finish_conversation(context)
                 return ConversationHandler.END
 
     else:
@@ -778,14 +826,17 @@ async def edit_value(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return EDIT_VALUE
         elif field == "photo" and update.message.text and update.message.text.strip() == "/done":
-            photos = context.user_data.pop('edit_photos', [])
-            if photos:
-                db.update_field(pid, "photo_id", photos[0])
-                db.update_field(pid, "photo_ids", json.dumps(photos[1:]) if len(photos) > 1 else None)
+            new_photos = context.user_data.pop('edit_photos', [])
+            mode       = context.user_data.pop('edit_photo_mode', 'replace')
+            existing   = context.user_data.pop('edit_photos_existing', [])
+            all_photos = (existing + new_photos) if mode == "add" else (new_photos or existing)
+            if all_photos:
+                db.update_field(pid, "photo_id",  all_photos[0])
+                db.update_field(pid, "photo_ids", json.dumps(all_photos[1:]) if len(all_photos) > 1 else None)
             part = db.get_by_id(pid)
-            await update.message.reply_text("✅ Фото оновлено!")
+            await update.message.reply_text(f"✅ Фото оновлено! Збережено: {len(all_photos)} шт.")
             await send_part_card(update.message, part)
-            context.user_data.clear()
+            _finish_conversation(context)
             return ConversationHandler.END
         elif field == "price":
             try:
@@ -807,7 +858,7 @@ async def edit_value(update: Update, context: ContextTypes.DEFAULT_TYPE):
         part = db.get_by_id(pid)
         await update.message.reply_text("✅ Оновлено!")
         await send_part_card(update.message, part)
-        context.user_data.clear()
+        _finish_conversation(context)
         return ConversationHandler.END
 
 
@@ -1043,6 +1094,10 @@ async def free_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if waiting in ('search_num', 'search_car'):
         context.user_data.pop('awaiting', None)
 
+    # Блокуємо пошук якщо це повідомлення вже оброблено ConversationHandler
+    if context.chat_data.pop('_just_finished', False):
+        return
+
     # Не запускати пошук якщо користувач в процесі додавання/редагування
     if context.user_data.get('new_part') is not None:
         return
@@ -1096,7 +1151,7 @@ def main():
             EDIT_CHOOSE: [CallbackQueryHandler(edit_choose, pattern=r"^(ef_|edit_cancel)")],
             EDIT_VALUE:  [MessageHandler(filters.TEXT & ~filters.COMMAND, edit_value),
                           MessageHandler(filters.PHOTO, edit_value),
-                          CallbackQueryHandler(edit_value, pattern=r"^(econd_|emarket_|eside_|elamp_|ephoto_done)")],
+                          CallbackQueryHandler(edit_value, pattern=r"^(econd_|emarket_|eside_|elamp_|ephoto_done|ephoto_mode_)")],
         },
         fallbacks=[CommandHandler("cancel", cancel)],
         allow_reentry=True,

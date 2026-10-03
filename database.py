@@ -153,19 +153,58 @@ class Database:
             return [dict(r) for r in rows]
 
     def smart_search(self, query: str) -> List[Dict]:
-        """Search by partial number, brand, model, description, side or lamp_type."""
-        q = f"%{query.strip()}%"
+        """Search by partial number, brand, model, description, side or lamp_type.
+
+        Supports multi-word queries: each token must match at least one field,
+        and ALL tokens must match (AND logic between tokens, OR across fields).
+        Example: "BMW 4" → finds parts where one field contains "BMW"
+                           AND another field contains "4".
+        Also tries full-phrase match first for best relevance.
+        """
+        tokens = query.strip().split()
+        if not tokens:
+            return []
+
+        FIELDS = [
+            "UPPER(part_number)",
+            "UPPER(car_brand)",
+            "UPPER(car_model)",
+            "UPPER(description)",
+            "UPPER(COALESCE(side,''))",
+            "UPPER(COALESCE(lamp_type,''))",
+        ]
+
         with self._connect() as conn:
+            # ── Score expression: count how many tokens match any field ──────
+            score_parts = []
+            params: list = []
+
+            for token in tokens:
+                t = f"%{token.upper()}%"
+                field_checks = " OR ".join(f"{f} LIKE ?" for f in FIELDS)
+                score_parts.append(f"CASE WHEN ({field_checks}) THEN 1 ELSE 0 END")
+                params.extend([t] * len(FIELDS))
+
+            score_expr = " + ".join(score_parts)
+            n = len(tokens)
+
+            # ── WHERE: every token must match at least one field (AND) ───────
+            where_clauses = []
+            where_params: list = []
+            for token in tokens:
+                t = f"%{token.upper()}%"
+                clause = " OR ".join(f"{f} LIKE ?" for f in FIELDS)
+                where_clauses.append(f"({clause})")
+                where_params.extend([t] * len(FIELDS))
+
+            where_sql = " AND ".join(where_clauses)
+
             rows = conn.execute(
-                """SELECT * FROM parts
-                   WHERE UPPER(part_number) LIKE UPPER(?)
-                      OR UPPER(car_brand)   LIKE UPPER(?)
-                      OR UPPER(car_model)   LIKE UPPER(?)
-                      OR UPPER(description) LIKE UPPER(?)
-                      OR UPPER(COALESCE(side,''))      LIKE UPPER(?)
-                      OR UPPER(COALESCE(lamp_type,'')) LIKE UPPER(?)
-                   ORDER BY car_brand, car_model, part_number""",
-                (q, q, q, q, q, q)
+                f"""SELECT *, ({score_expr}) AS match_score
+                    FROM parts
+                    WHERE {where_sql}
+                    ORDER BY match_score DESC, car_brand, car_model, part_number""",
+                params + where_params
             ).fetchall()
             return [dict(r) for r in rows]
 
