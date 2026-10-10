@@ -648,12 +648,12 @@ async def edit_choose(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await q.answer()
 
     if q.data == "edit_done":
-        _finish_conversation(context)
+        context.user_data.clear()
         await q.message.reply_text("✅ Редагування завершено.")
         return ConversationHandler.END
 
     if q.data == "edit_cancel":
-        _finish_conversation(context)
+        context.user_data.clear()
         await q.message.reply_text("❌ Скасовано.")
         return ConversationHandler.END
 
@@ -768,7 +768,7 @@ async def edit_value(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await q.answer()
 
         if q.data == "edit_cancel":
-            _finish_conversation(context)
+            context.user_data.clear()
             await q.message.reply_text("❌ Скасовано.")
             return ConversationHandler.END
 
