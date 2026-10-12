@@ -576,7 +576,7 @@ async def _save_part(message, context: ContextTypes.DEFAULT_TYPE):
     part    = db.get_by_id(part_id)
     await message.reply_text("✅ *Запчастину додано!*", parse_mode="Markdown")
     await send_part_card(message, part)
-    _finish_conversation(context)
+    context.user_data.clear()
     return ConversationHandler.END
 
 
@@ -599,7 +599,7 @@ async def handle_duplicate(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await q.message.reply_text("❌ Скасовано.")
 
-    _finish_conversation(context)
+    context.user_data.clear()
     return ConversationHandler.END
 
 
