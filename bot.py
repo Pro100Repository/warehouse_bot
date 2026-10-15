@@ -64,7 +64,6 @@ def _edit_menu_kb(part: dict) -> InlineKeyboardMarkup:
 
 async def _back_to_edit_menu(msg, context, part: dict):
     """Після збереження поля — повертає меню редагування."""
-    context.user_data['edit_field'] = None
     await send_part_card(msg, part)
     await msg.reply_text(
         f"✏️ Редагування *{part['part_number']}*\nОберіть наступне поле або натисніть Готово:",
