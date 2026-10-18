@@ -165,6 +165,13 @@ class Database:
         if not tokens:
             return []
 
+        # Для кириличних полів (side, lamp_type) SQLite UPPER() не працює,
+        # тому додатково готуємо токени з першою великою літерою
+        def cyrillic_variants(token: str) -> list[str]:
+            """Повертає варіанти токена для пошуку без UPPER(): оригінал + Title + lower."""
+            return list({token, token.title(), token.lower(), token.upper()})
+
+
         # При пошуку кількох слів (напр. "BMW 4") номер деталі не враховуємо,
         # щоб уникнути хибних збігів по цифрах у номерах
         if len(tokens) > 1:
@@ -172,8 +179,8 @@ class Database:
                 "UPPER(car_brand)",
                 "UPPER(car_model)",
                 "UPPER(description)",
-                "UPPER(COALESCE(side,''))",
-                "UPPER(COALESCE(lamp_type,''))",
+                "COALESCE(side,'')",
+                "COALESCE(lamp_type,'')",
             ]
         else:
             FIELDS = [
@@ -181,8 +188,8 @@ class Database:
                 "UPPER(car_brand)",
                 "UPPER(car_model)",
                 "UPPER(description)",
-                "UPPER(COALESCE(side,''))",
-                "UPPER(COALESCE(lamp_type,''))",
+                "COALESCE(side,'')",
+                "COALESCE(lamp_type,'')",
             ]
 
         with self._connect() as conn:
@@ -191,22 +198,36 @@ class Database:
             params: list = []
 
             for token in tokens:
-                t = f"%{token.upper()}%"
-                field_checks = " OR ".join(f"{f} LIKE ?" for f in FIELDS)
+                field_checks_list = []
+                for f in FIELDS:
+                    if "UPPER(" in f:
+                        field_checks_list.append(f"{f} LIKE ?")
+                        params.append(f"%{token.upper()}%")
+                    else:
+                        variants = cyrillic_variants(token)
+                        conds = " OR ".join([f"{f} LIKE ?"] * len(variants))
+                        field_checks_list.append(f"({conds})")
+                        params.extend(f"%{v}%" for v in variants)
+                field_checks = " OR ".join(field_checks_list)
                 score_parts.append(f"CASE WHEN ({field_checks}) THEN 1 ELSE 0 END")
-                params.extend([t] * len(FIELDS))
 
             score_expr = " + ".join(score_parts)
-            n = len(tokens)
 
             # ── WHERE: every token must match at least one field (AND) ───────
             where_clauses = []
             where_params: list = []
             for token in tokens:
-                t = f"%{token.upper()}%"
-                clause = " OR ".join(f"{f} LIKE ?" for f in FIELDS)
-                where_clauses.append(f"({clause})")
-                where_params.extend([t] * len(FIELDS))
+                clause_parts = []
+                for f in FIELDS:
+                    if "UPPER(" in f:
+                        clause_parts.append(f"{f} LIKE ?")
+                        where_params.append(f"%{token.upper()}%")
+                    else:
+                        variants = cyrillic_variants(token)
+                        conds = " OR ".join([f"{f} LIKE ?"] * len(variants))
+                        clause_parts.append(f"({conds})")
+                        where_params.extend(f"%{v}%" for v in variants)
+                where_clauses.append(f"({' OR '.join(clause_parts)})")
 
             where_sql = " AND ".join(where_clauses)
 
