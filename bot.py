@@ -732,11 +732,23 @@ async def edit_choose(update: Update, context: ContextTypes.DEFAULT_TYPE):
     part = db.get_by_id(pid)
     current = part.get(field)
     current_str = f"\n\nПоточне значення:\n`{current}`" if current not in (None, '', 0) else ""
-    await q.message.reply_text(
-        f"✏️ Введіть новий {labels.get(field, field)}:{current_str}",
-        reply_markup=InlineKeyboardMarkup(CANCEL_BTN),
-        parse_mode="Markdown"
-    )
+
+    if field == "description":
+        kb = []
+        if current:
+            kb.append([InlineKeyboardButton("🗑 Очистити опис", callback_data="edesc_clear")])
+        kb += CANCEL_BTN
+        await q.message.reply_text(
+            f"✏️ Введіть новий опис:{current_str}",
+            reply_markup=InlineKeyboardMarkup(kb),
+            parse_mode="Markdown"
+        )
+    else:
+        await q.message.reply_text(
+            f"✏️ Введіть новий {labels.get(field, field)}:{current_str}",
+            reply_markup=InlineKeyboardMarkup(CANCEL_BTN),
+            parse_mode="Markdown"
+        )
     return EDIT_VALUE
 
 
@@ -770,6 +782,13 @@ async def edit_value(update: Update, context: ContextTypes.DEFAULT_TYPE):
             context.user_data.clear()
             await q.message.reply_text("❌ Скасовано.")
             return ConversationHandler.END
+
+        if q.data == "edesc_clear":
+            db.update_field(pid, "description", None)
+            part = db.get_by_id(pid)
+            await q.message.reply_text("✅ Опис очищено!")
+            await _back_to_edit_menu(q.message, context, part)
+            return EDIT_CHOOSE
 
         # Condition multi-select
         if q.data.startswith("econd_"):
@@ -1176,7 +1195,7 @@ def main():
             EDIT_CHOOSE: [CallbackQueryHandler(edit_choose, pattern=r"^(ef_|edit_cancel|edit_done)")],
             EDIT_VALUE:  [MessageHandler(filters.TEXT & ~filters.COMMAND, edit_value),
                           MessageHandler(filters.PHOTO, edit_value),
-                          CallbackQueryHandler(edit_value, pattern=r"^(econd_|emarket_|eside_|elamp_|ephoto_done|ephoto_mode_|edit_cancel)")],
+                          CallbackQueryHandler(edit_value, pattern=r"^(econd_|emarket_|eside_|elamp_|ephoto_done|ephoto_mode_|edit_cancel|edesc_clear)")],
         },
         fallbacks=[CommandHandler("cancel", cancel)],
         allow_reentry=True,

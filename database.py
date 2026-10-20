@@ -174,22 +174,28 @@ class Database:
 
         # При пошуку кількох слів (напр. "BMW 4") номер деталі не враховуємо,
         # щоб уникнути хибних збігів по цифрах у номерах
+        # UPPER() в SQLite працює лише для ASCII.
+        # Латинські поля (part_number, market) — через UPPER().
+        # Кириличні поля (car_brand, car_model, description, side, lamp_type)
+        # — без UPPER(), замість цього cyrillic_variants() генерує всі регістри.
         if len(tokens) > 1:
             FIELDS = [
-                "UPPER(car_brand)",
-                "UPPER(car_model)",
-                "UPPER(description)",
-                "COALESCE(side,'')",
-                "COALESCE(lamp_type,'')",
+                "UPPER(COALESCE(market,''))",  # ASCII
+                "COALESCE(car_brand,'')",       # кирилиця
+                "COALESCE(car_model,'')",       # кирилиця
+                "COALESCE(description,'')",     # кирилиця
+                "COALESCE(side,'')",            # кирилиця
+                "COALESCE(lamp_type,'')",       # кирилиця
             ]
         else:
             FIELDS = [
-                "UPPER(part_number)",
-                "UPPER(car_brand)",
-                "UPPER(car_model)",
-                "UPPER(description)",
-                "COALESCE(side,'')",
-                "COALESCE(lamp_type,'')",
+                "UPPER(part_number)",           # ASCII
+                "UPPER(COALESCE(market,''))",   # ASCII
+                "COALESCE(car_brand,'')",       # кирилиця
+                "COALESCE(car_model,'')",       # кирилиця
+                "COALESCE(description,'')",     # кирилиця
+                "COALESCE(side,'')",            # кирилиця
+                "COALESCE(lamp_type,'')",       # кирилиця
             ]
 
         with self._connect() as conn:
@@ -238,6 +244,25 @@ class Database:
                     ORDER BY match_score DESC, car_brand, car_model, part_number""",
                 params + where_params
             ).fetchall()
+
+            # Fallback: якщо AND між токенами нічого не знайшов —
+            # шукаємо повну фразу як один рядок в description
+            if not rows and len(tokens) > 1:
+                phrase = query.strip()
+                variants = cyrillic_variants(phrase)
+                phrase_fields = ["COALESCE(description,'')", "COALESCE(car_model,'')", "COALESCE(car_brand,'')"]
+                phrase_clauses = " OR ".join(
+                    f"{f} LIKE ?" for f in phrase_fields for _ in variants
+                )
+                phrase_params = [f"%{v}%" for _ in phrase_fields for v in variants]
+                rows = conn.execute(
+                    f"""SELECT *, 1 AS match_score
+                        FROM parts
+                        WHERE {phrase_clauses}
+                        ORDER BY car_brand, car_model, part_number""",
+                    phrase_params
+                ).fetchall()
+
             return [dict(r) for r in rows]
 
     def photo_search(self,
